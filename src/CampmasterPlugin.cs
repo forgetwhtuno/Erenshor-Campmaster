@@ -1,0 +1,650 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using BepInEx;
+using HarmonyLib;
+
+namespace ErenshorCampmaster
+{
+    // ---------------------------------------------------------------------
+    // Erenshor Campmaster - Phase 4: Hunt Camp observation + explicit Relax downtime.
+    //
+    // This mod observes. It does not assign roles, toggle Auto Pull, pick
+    // targets, attack, heal, move Sims, loot, travel, or otherwise play
+    // Erenshor. Removing it changes nothing about native behaviour.
+    // ---------------------------------------------------------------------
+    [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
+    [BepInProcess("Erenshor.exe")]
+    public sealed class CampmasterPlugin : BaseUnityPlugin
+    {
+        internal const string PluginGuid = "forgetwhtuno.erenshor.campmaster";
+        internal const string PluginName = "Erenshor Campmaster";
+        internal const string PluginVersion = "0.4.0";
+
+        internal static CampmasterPlugin Instance;
+
+        private Harmony _harmony;
+        private CampSessionTracker _tracker;
+        private RelaxSessionTracker _relaxTracker;
+        private float _nextPollSeconds;
+        private CampObservation _lastObservation;
+        private int _readFailureLogCount;
+
+        // Native state is polled at a low fixed rate. Nothing here belongs on
+        // a per-frame path.
+        private const float PollIntervalSeconds = 1.0f;
+
+        internal CampSessionTracker Tracker { get { return _tracker; } }
+        internal RelaxSessionTracker RelaxTracker { get { return _relaxTracker; } }
+        internal CampObservation LastObservation { get { return _lastObservation; } }
+
+        private void Awake()
+        {
+            Instance = this;
+
+            CampConfig config = new CampConfig();
+            config.AutoRecognitionEnabled = Config.Bind("Recognition", "AutoRecognition", true,
+                "Automatically recognize a Hunt Camp when the native party is guarding at a common anchor with a verified Puller and Auto Pull enabled. Disable to require /camp here.").Value;
+            config.AutoStabilitySeconds = Config.Bind("Recognition", "StabilitySeconds", 8.0,
+                "Campmaster threshold (not an Erenshor mechanic): how long every required native signal must hold before a camp is recognized.").Value;
+            config.DepartureRadius = Config.Bind("Recognition", "DepartureRadius", 45f,
+                "Campmaster threshold (not an Erenshor mechanic): distance in Unity units from the camp anchor that counts as leaving camp.").Value;
+            config.DepartureGraceSeconds = Config.Bind("Recognition", "DepartureGraceSeconds", 45.0,
+                "Campmaster threshold: how long the player must stay beyond DepartureRadius before the camp session ends.").Value;
+            config.PartyLossGraceSeconds = Config.Bind("Recognition", "PartyLossGraceSeconds", 20.0,
+                "Campmaster threshold: grace period for party churn/zoning before a camp session is finalized.").Value;
+            config.SignalLossGraceSeconds = Config.Bind("Recognition", "SignalLossGraceSeconds", 20.0,
+                "Campmaster threshold: how long unreadable native state may persist before an active camp is suspended.").Value;
+            config.EncounterQuietSeconds = Config.Bind("Session", "EncounterQuietSeconds", 8.0,
+                "Campmaster threshold: quiet period after combat clears before a completed encounter is counted.").Value;
+            config.RoughEncounterSeconds = Config.Bind("Session", "RoughEncounterSeconds", 45.0,
+                "Campmaster-derived classification threshold (not an Erenshor mechanic): combat duration at or above this value emits a rough-encounter seed.").Value;
+            config.RepeatedEnemyThreshold = Config.Bind("Session", "RepeatedEnemyThreshold", 3,
+                "Campmaster-derived threshold (not an Erenshor mechanic): verified pulls of the same exact target name before one repeated-enemy seed is emitted.").Value;
+
+            _tracker = new CampSessionTracker(config);
+
+            RelaxConfig relaxConfig = new RelaxConfig();
+            relaxConfig.DepartureRadius = Config.Bind("Relax", "DepartureRadius", 35f,
+                "Campmaster Relax threshold (not an Erenshor mechanic): distance from the explicit Relax anchor that counts as leaving.").Value;
+            relaxConfig.DepartureGraceSeconds = Config.Bind("Relax", "DepartureGraceSeconds", 15.0,
+                "How long the player may remain beyond the Relax radius before the Relax session ends.").Value;
+            relaxConfig.PartyLossGraceSeconds = Config.Bind("Relax", "PartyLossGraceSeconds", 12.0,
+                "Grace period for temporary party churn before an active Relax session ends.").Value;
+            _relaxTracker = new RelaxSessionTracker(relaxConfig);
+
+            _harmony = new Harmony(PluginGuid);
+            try
+            {
+                _harmony.PatchAll();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("Erenshor Campmaster failed to patch: " + ex);
+                return;
+            }
+
+            Logger.LogInfo("Erenshor Campmaster 0.4.0 loaded. Hunt Camp remains read-only; explicit Relax is available with /relax here|off|status.");
+        }
+
+        private void Update()
+        {
+            try
+            {
+                if (_tracker == null) return;
+                if (UnityEngine.Time.unscaledTime < _nextPollSeconds) return;
+                _nextPollSeconds = UnityEngine.Time.unscaledTime + PollIntervalSeconds;
+
+                DateTime now = DateTime.UtcNow;
+                CampObservation obs = NativeGroupStateReader.Read(now);
+                _lastObservation = obs;
+
+                if (!obs.ReadSucceeded && _readFailureLogCount < 3)
+                {
+                    _readFailureLogCount++;
+                    Logger.LogWarning("Campmaster could not read native party state; reporting camp facts as unknown.");
+                }
+
+                long relaxBefore = _relaxTracker == null ? 0L : _relaxTracker.LatestSequence;
+                if (_relaxTracker != null) _relaxTracker.Tick(obs, now);
+                ReportNewRelaxEvents(relaxBefore);
+
+                // Relax and Hunt Camp are mutually exclusive downtime intents. While Relax is
+                // active, do not let the Hunt Camp auto-recognizer create a second session.
+                if (_relaxTracker == null || !_relaxTracker.IsActive)
+                {
+                    long before = _tracker.LatestSequence;
+                    _tracker.Tick(obs, now);
+                    ReportNewEvents(before);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("Campmaster tick failed: " + ex);
+            }
+        }
+
+        private void OnDestroy()
+        {
+            try { if (_harmony != null) _harmony.UnpatchSelf(); }
+            catch { }
+            Instance = null;
+        }
+
+        private void ReportNewEvents(long afterSequence)
+        {
+            if (_tracker == null || _tracker.LatestSequence <= afterSequence) return;
+            List<CampEvent> events = _tracker.GetEventsAfter(afterSequence);
+            for (int i = 0; i < events.Count; i++)
+            {
+                CampEvent evt = events[i];
+                switch (evt.Type)
+                {
+                    case CampEventType.CampStarted:
+                        Chat("[Camp] Hunt camp started in " + Describe(evt.Zone) + " (" + evt.Detail + ").", "lightblue");
+                        break;
+                    case CampEventType.CampEnded:
+                        Chat("[Camp] Hunt camp ended: " + evt.Detail + ".", "lightblue");
+                        break;
+                    case CampEventType.CampSuspended:
+                        Chat("[Camp] Hunt camp suspended: " + evt.Detail + ".", "yellow");
+                        break;
+                    case CampEventType.CampResumed:
+                        Chat("[Camp] Hunt camp resumed: " + evt.Detail + ".", "lightblue");
+                        break;
+                }
+            }
+        }
+
+        private void ReportNewRelaxEvents(long afterSequence)
+        {
+            if (_relaxTracker == null || _relaxTracker.LatestSequence <= afterSequence) return;
+            List<RelaxEvent> events = _relaxTracker.GetEventsAfter(afterSequence);
+            for (int i = 0; i < events.Count; i++)
+            {
+                RelaxEvent evt = events[i];
+                switch (evt.Type)
+                {
+                    case RelaxEventType.RelaxStarted:
+                        Chat("[Relax] Relax started in " + Describe(evt.Zone) + ".", "lightblue");
+                        Chat("[Relax] Social context only: Campmaster did not move, guard, heal, or otherwise control the party.", "grey");
+                        break;
+                    case RelaxEventType.RelaxSuspended:
+                        Chat("[Relax] Suspended for combat.", "yellow");
+                        break;
+                    case RelaxEventType.RelaxResumed:
+                        Chat("[Relax] Resumed after combat.", "lightblue");
+                        break;
+                    case RelaxEventType.RelaxEnded:
+                        Chat("[Relax] Relax ended: " + evt.Detail + ".", "lightblue");
+                        break;
+                }
+            }
+        }
+
+        internal void Chat(string message, string color)
+        {
+            try { UpdateSocialLog.LogAdd(message, color); }
+            catch
+            {
+                try { UpdateSocialLog.LogAdd(message); }
+                catch { }
+            }
+        }
+
+        internal void LogPatchError(Exception ex)
+        {
+            try { Logger.LogError("Campmaster command patch failed: " + ex); }
+            catch { }
+        }
+
+        // -----------------------------------------------------------------
+        // Commands
+        // -----------------------------------------------------------------
+        internal bool TryHandle(TypeText typeText, string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return false;
+            string command = raw.Trim();
+            string argument;
+
+            if (TryMatchCommand(command, "/relax", out argument))
+            {
+                ClearInput(typeText);
+                HandleRelax(argument);
+                return true;
+            }
+
+            if (!TryMatchCommand(command, "/camp", out argument)) return false;
+            ClearInput(typeText);
+
+            string verb = argument == null ? string.Empty : argument.Trim();
+            if (verb.Length == 0 || Is(verb, "status")) { PrintStatus(); return true; }
+            if (Is(verb, "setup")) { PrintSetupGuide(); return true; }
+            if (Is(verb, "here")) { DeclareHere(); return true; }
+            if (Is(verb, "clear") || Is(verb, "off")) { ClearCamp(); return true; }
+            if (Is(verb, "selftest")) { RunSelfTest(); return true; }
+
+            if (verb.StartsWith("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                string rest = verb.Substring(4).Trim();
+                if (Is(rest, "on")) { SetAuto(true); return true; }
+                if (Is(rest, "off")) { SetAuto(false); return true; }
+                Chat("[Camp] Automatic recognition is " + (_tracker.Config.AutoRecognitionEnabled ? "ON" : "OFF") +
+                     ". Usage: /camp auto on|off", "yellow");
+                return true;
+            }
+
+            Chat("[Camp] Usage: /camp status | /camp setup | /camp here | /camp clear | /camp auto on|off", "yellow");
+            return true;
+        }
+
+        private void HandleRelax(string argument)
+        {
+            string verb = argument == null ? string.Empty : argument.Trim();
+            if (verb.Length == 0 || Is(verb, "status")) { PrintRelaxStatus(); return; }
+            if (Is(verb, "here") || Is(verb, "on")) { StartRelax(); return; }
+            if (Is(verb, "off") || Is(verb, "clear")) { StopRelax(); return; }
+            Chat("[Relax] Usage: /relax here | /relax off | /relax status", "yellow");
+        }
+
+        private void StartRelax()
+        {
+            if (_relaxTracker == null) return;
+            if (_tracker != null && _tracker.IsActive)
+            {
+                Chat("[Relax] A Hunt Camp is active. Use /camp clear before starting Relax.", "yellow");
+                return;
+            }
+            if (_relaxTracker.IsActive)
+            {
+                Chat("[Relax] Relax is already active.", "yellow");
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            CampObservation obs = NativeGroupStateReader.Read(now);
+            _lastObservation = obs;
+            if (obs == null || !obs.ReadSucceeded)
+            {
+                Chat("[Relax] Cannot read party state right now; try again in a moment.", "yellow");
+                return;
+            }
+            if (!obs.HasParty || obs.LocalResolvedMembers <= 0)
+            {
+                Chat("[Relax] No locally resolved Sim party detected. Relax is a local party downtime context.", "yellow");
+                return;
+            }
+            if (!obs.PlayerPosition.HasValue)
+            {
+                Chat("[Relax] Player position is unavailable; cannot establish a Relax anchor.", "yellow");
+                return;
+            }
+            if (!obs.InCombat.HasValue)
+            {
+                Chat("[Relax] Combat state is unknown; try again when the party is clearly out of combat.", "yellow");
+                return;
+            }
+            if (obs.InCombat.Value)
+            {
+                Chat("[Relax] Cannot start Relax during combat.", "yellow");
+                return;
+            }
+
+            _relaxTracker.RequestStart(obs.PlayerPosition);
+            long before = _relaxTracker.LatestSequence;
+            _relaxTracker.Tick(obs, now);
+            ReportNewRelaxEvents(before);
+            if (!_relaxTracker.IsActive)
+                Chat("[Relax] Relax could not be established from the fresh native party/combat state; try again in a moment.", "yellow");
+        }
+
+        private void StopRelax()
+        {
+            if (_relaxTracker == null || !_relaxTracker.IsActive)
+            {
+                Chat("[Relax] Relax is not active.", "yellow");
+                return;
+            }
+            DateTime now = DateTime.UtcNow;
+            _relaxTracker.RequestStop();
+            long before = _relaxTracker.LatestSequence;
+            _relaxTracker.Tick(_lastObservation, now);
+            ReportNewRelaxEvents(before);
+        }
+
+        private void PrintRelaxStatus()
+        {
+            if (_relaxTracker == null) return;
+            RelaxSnapshot snap = _relaxTracker.BuildSnapshot(DateTime.UtcNow);
+            if (!snap.IsActive)
+            {
+                Chat("RELAX - inactive", "lightblue");
+                Chat("  Use /relax here for explicit social downtime. Sitting alone does not declare Relax.", "grey");
+                return;
+            }
+
+            Chat("RELAX - " + Describe(snap.Zone) + " - " + FormatDuration(snap.ElapsedSeconds), "lightblue");
+            Chat("  State: " + snap.State, snap.State == RelaxSessionState.SuspendedForCombat ? "yellow" : "grey");
+            if (snap.Party != null && snap.Party.Count > 0)
+                Chat("  Party: " + string.Join(", ", snap.Party.ToArray()), "grey");
+            Chat("  Authority: " + snap.Authority, "grey");
+            if (snap.Anchor.HasValue) Chat("  Anchor: " + snap.Anchor.Value.Describe(), "grey");
+            Chat("  Context only: no movement, Guard, combat, healing, or native role settings were changed.", "grey");
+        }
+
+        private void PrintSetupGuide()
+        {
+            if (_relaxTracker != null && _relaxTracker.IsActive)
+            {
+                Chat("CAMP SETUP - Relax is active", "lightblue");
+                Chat("  Next: use /relax off before establishing a Hunt Camp.", "yellow");
+                return;
+            }
+
+            CampObservation obs = _lastObservation;
+            if (obs == null || !obs.ReadSucceeded)
+            {
+                Chat("CAMP SETUP - native party state unreadable", "lightblue");
+                Chat("  Wait a moment and try /camp setup again.", "yellow");
+                return;
+            }
+            if (!obs.HasParty)
+            {
+                Chat("CAMP SETUP - no party", "lightblue");
+                Chat("  Form a normal Sim party first.", "yellow");
+                return;
+            }
+
+            if (obs.RaidActive == true)
+            {
+                Chat("CAMP SETUP - raid active", "lightblue");
+                Chat("  Hunt Camp recognition is for the normal local Sim party, not raids.", "yellow");
+                return;
+            }
+            if (obs.LocalResolvedMembers <= 0)
+            {
+                Chat("CAMP SETUP - local Sims unresolved", "lightblue");
+                Chat("  Wait for the local Sim party to finish loading and try again.", "yellow");
+                return;
+            }
+
+            RoleHolder setupMainAssist = obs.DesignatedMainAssist.IsResolved ? obs.DesignatedMainAssist : obs.MainAssist;
+            Chat("CAMP SETUP", "lightblue");
+            Chat("  Main Tank: " + obs.MainTank.Describe(), obs.MainTank.IsKnown ? "grey" : "yellow");
+            Chat("  Main Assist: " + setupMainAssist.Describe(), setupMainAssist.IsKnown ? "grey" : "yellow");
+            Chat("  Puller: " + obs.Puller.Describe(), obs.Puller.IsKnown ? "grey" : "yellow");
+            if (obs.HealersKnown)
+                Chat("  Healing/Mana: " + (obs.HealerNames.Count == 0 ? "none" : string.Join(", ", obs.HealerNames.ToArray())), "grey");
+            else Chat("  Healing/Mana: unknown", "grey");
+            Chat("  Guard: " + (obs.GuardActive.HasValue ? (obs.GuardActive.Value ? "ON" : "OFF") : "unknown"),
+                obs.GuardActive.HasValue && obs.GuardActive.Value ? "grey" : "yellow");
+            Chat("  Auto Pull: " + (obs.AutoPullEnabled.HasValue ? (obs.AutoPullEnabled.Value ? "ON" : "OFF") : "unknown"),
+                obs.AutoPullEnabled.HasValue && obs.AutoPullEnabled.Value ? "grey" : "yellow");
+
+            if (obs.MainTank.Kind == RoleHolderKind.Unknown)
+                Chat("  Next: Main Tank state is unknown; reopen/confirm Manage Roles and recheck.", "yellow");
+            else if (obs.MainTank.Kind == RoleHolderKind.None)
+                Chat("  Next: assign Main Tank in Erenshor's Manage Roles window.", "yellow");
+            else if (setupMainAssist.Kind == RoleHolderKind.Unknown)
+                Chat("  Next: Main Assist state is unknown; reopen/confirm Manage Roles and recheck.", "yellow");
+            else if (setupMainAssist.Kind == RoleHolderKind.None)
+                Chat("  Next: assign Main Assist in Erenshor's Manage Roles window.", "yellow");
+            else if (obs.Puller.Kind == RoleHolderKind.Unknown)
+                Chat("  Next: Puller state is unknown; reopen/confirm Manage Roles and recheck.", "yellow");
+            else if (obs.Puller.Kind == RoleHolderKind.None)
+                Chat("  Next: assign a Puller in Erenshor's Manage Roles window.", "yellow");
+            else if (!obs.HealersKnown)
+                Chat("  Next: Healing/Mana assignment state is unknown; reopen/confirm Manage Roles and recheck.", "yellow");
+            else if (obs.HealerNames.Count == 0)
+                Chat("  Next: assign Healing/Mana in Erenshor's Manage Roles window for native mana-gated pulling.", "yellow");
+            else if (!obs.GuardActive.HasValue)
+                Chat("  Next: Guard state is unknown; use native Guard and recheck.", "yellow");
+            else if (!obs.GuardActive.Value)
+                Chat("  Next: Guard the party first (Shift+6). Guard turns native Auto Pull off.", "yellow");
+            else if (!obs.AutoPullEnabled.HasValue)
+                Chat("  Next: Auto Pull state is unknown; recheck after using the native control.", "yellow");
+            else if (!obs.AutoPullEnabled.Value)
+                Chat("  Next: with Guard already set, enable native Auto Pull (Shift+5).", "yellow");
+            else
+                Chat("  Ready: native Hunt Camp signals are present; hold position through the recognition stability window.", "lightblue");
+
+            if (obs.Puller.Kind == RoleHolderKind.Sim)
+                Chat("  Tip: for one-pull testing, target a mob and use native Pull Target (Shift+4); /camp status should show PULL INCOMING when the Sim pull lifecycle is readable.", "grey");
+            else if (obs.Puller.Kind == RoleHolderKind.Player)
+                Chat("  Tip: Pull Target testing can still use the native control, but Campmaster cannot show PULL INCOMING for a player-held Puller because CurrentPullPhase is Sim-only.", "grey");
+        }
+
+        private void DeclareHere()
+        {
+            if (_tracker == null) return;
+            DateTime nowUtc = DateTime.UtcNow;
+            CampObservation obs = NativeGroupStateReader.Read(nowUtc);
+            _lastObservation = obs;
+            if (obs == null || !obs.ReadSucceeded)
+            {
+                Chat("[Camp] Cannot read party state right now; try again in a moment.", "yellow");
+                return;
+            }
+            if (!obs.HasParty)
+            {
+                Chat("[Camp] No party detected. /camp here declares a hunting-camp context for your current group.", "yellow");
+                return;
+            }
+            if (obs.LocalResolvedMembers <= 0)
+            {
+                Chat("[Camp] No locally resolved Sim party is available; wait for the party to finish loading.", "yellow");
+                return;
+            }
+            if (obs.RaidActive == true)
+            {
+                Chat("[Camp] /camp here is unavailable while a raid is active.", "yellow");
+                return;
+            }
+            if (!obs.PlayerPosition.HasValue)
+            {
+                Chat("[Camp] Player position is unavailable; cannot establish a safe camp anchor.", "yellow");
+                return;
+            }
+
+            if (_relaxTracker != null && _relaxTracker.IsActive)
+            {
+                long relaxBefore = _relaxTracker.LatestSequence;
+                _relaxTracker.RequestStop("replaced by /camp here");
+                _relaxTracker.Tick(obs, nowUtc);
+                ReportNewRelaxEvents(relaxBefore);
+            }
+
+            _tracker.RequestDeclareHere(obs.PlayerPosition);
+            long before = _tracker.LatestSequence;
+            _tracker.Tick(obs, nowUtc);
+            ReportNewEvents(before);
+            if (_tracker.IsActive)
+                Chat("[Camp] Context only: Campmaster did not change roles, Auto Pull, targets, or movement.", "grey");
+            else
+                Chat("[Camp] Hunt Camp could not be established from the fresh local party state.", "yellow");
+        }
+
+        private void ClearCamp()
+        {
+            if (_tracker == null) return;
+            if (!_tracker.IsActive)
+            {
+                Chat("[Camp] No hunt camp is active.", "yellow");
+                return;
+            }
+            _tracker.RequestClear();
+            long before = _tracker.LatestSequence;
+            _tracker.Tick(NativeGroupStateReader.Read(DateTime.UtcNow), DateTime.UtcNow);
+            ReportNewEvents(before);
+            Chat("[Camp] Cleared Campmaster context. Native pulling was not changed.", "grey");
+        }
+
+        private void SetAuto(bool enabled)
+        {
+            if (_tracker == null) return;
+            _tracker.SetAutoRecognitionEnabled(enabled);
+            Chat("[Camp] Automatic recognition " + (enabled ? "ON" : "OFF") + ".", "lightblue");
+        }
+
+        private void RunSelfTest()
+        {
+            List<string> lines = CampDeterministicTests.Run();
+            for (int i = 0; i < lines.Count; i++) Chat("[Camp] " + lines[i], "grey");
+        }
+
+        // Only verified facts are printed. Unknown stays unknown.
+        private void PrintStatus()
+        {
+            if (_tracker == null) return;
+            CampSnapshot snap = _tracker.BuildSnapshot(DateTime.UtcNow);
+            CampObservation obs = _lastObservation;
+
+            if (obs != null && !obs.ReadSucceeded)
+                Chat("[Camp] Native party state is currently unreadable; facts below may be missing.", "yellow");
+
+            if (!snap.IsActive)
+            {
+                Chat("CAMP - none", "lightblue");
+                if (_relaxTracker != null && _relaxTracker.IsActive)
+                {
+                    Chat("  Downtime mode: Relax (use /relax status)", "grey");
+                    Chat("  Hunt Camp recognition is suppressed until Relax ends.", "grey");
+                    return;
+                }
+                Chat("  Automatic recognition: " + (_tracker.Config.AutoRecognitionEnabled ? "ON" : "OFF"), "grey");
+                if (obs != null && obs.ReadSucceeded && _tracker.Config.AutoRecognitionEnabled)
+                    Chat("  Waiting on: " + CampSessionTracker.DescribeRecognitionWait(obs, _tracker.Config.DepartureRadius), "grey");
+                Chat("  Use /camp here to declare this spot as your hunting camp.", "grey");
+                if (obs != null && obs.ReadSucceeded) PrintNativeFacts(snap);
+                else Chat("  Native facts: unavailable on the current sample.", "yellow");
+                return;
+            }
+
+            string header = "CAMP - " + Describe(snap.Zone) + " - " + FormatDuration(snap.ElapsedSeconds);
+            Chat(header, "lightblue");
+            Chat("  State: " + snap.State + " (" + (snap.Source == CampRecognitionSource.Auto ? "recognized" : "declared") + ")", "grey");
+            Chat("  Activity: " + DescribeActivity(snap), "grey");
+            if (snap.Party != null && snap.Party.Count > 0)
+                Chat("  Party: " + string.Join(", ", snap.Party.ToArray()), "grey");
+            Chat("  Authority: " + snap.Authority, "grey");
+            if (snap.Anchor.HasValue)
+                Chat("  Anchor: " + snap.Anchor.Value.Describe() + " (" + Describe(snap.AnchorOrigin) + ")", "grey");
+            Chat("  Encounters: " + snap.CompletedEncounters.ToString(CultureInfo.InvariantCulture) +
+                 " | Verified pulls: " + snap.VerifiedPulls.ToString(CultureInfo.InvariantCulture), "grey");
+            if (snap.RoughEncounters > 0 || snap.RepeatedEnemySignals > 0)
+                Chat("  Social seeds: rough=" + snap.RoughEncounters.ToString(CultureInfo.InvariantCulture) +
+                     ", repeated-target=" + snap.RepeatedEnemySignals.ToString(CultureInfo.InvariantCulture), "grey");
+            if (obs != null && obs.ReadSucceeded) PrintNativeFacts(snap);
+            else Chat("  Native facts: unavailable on the current sample.", "yellow");
+        }
+
+        private void PrintNativeFacts(CampSnapshot snap)
+        {
+            Chat("  Main Tank: " + snap.MainTank.Describe(), snap.MainTank.Kind == RoleHolderKind.Unknown ? "yellow" : "grey");
+            Chat("  Main Assist: " + snap.MainAssist.Describe(), snap.MainAssist.Kind == RoleHolderKind.Unknown ? "yellow" : "grey");
+            Chat("  Puller: " + snap.Puller.Describe(), snap.Puller.Kind == RoleHolderKind.Unknown ? "yellow" : "grey");
+            if (snap.CrowdControlKnown && snap.CrowdControl.Count > 0)
+                Chat("  Crowd Control: " + string.Join(", ", snap.CrowdControl.ToArray()), "grey");
+            if (snap.HealersKnown)
+                Chat("  Healing/Mana: " + (snap.Healers.Count == 0 ? "none assigned" : string.Join(", ", snap.Healers.ToArray())), "grey");
+            else
+                Chat("  Healing/Mana: unknown", "grey");
+
+            if (snap.AutoPullEnabled.HasValue)
+                Chat("  Auto Pull: " + (snap.AutoPullEnabled.Value ? "ON" : "OFF"), "grey");
+            else
+                Chat("  Auto Pull: unknown", "grey");
+
+            if (snap.PullerActivelyPulling.HasValue)
+                Chat("  Pull lifecycle: " + (snap.PullerActivelyPulling.Value ? "PULL INCOMING" : "idle"), "grey");
+            else if (snap.Puller.Kind == RoleHolderKind.Sim)
+                Chat("  Pull lifecycle: unknown", "grey");
+            else if (snap.Puller.Kind == RoleHolderKind.Player)
+                Chat("  Pull lifecycle: unavailable for player Puller (no native Sim CurrentPullPhase)", "grey");
+            if (!string.IsNullOrEmpty(snap.CurrentPullTargetName))
+                Chat("  Current pull target: " + snap.CurrentPullTargetName, "grey");
+
+            if (snap.HoldingForMana.HasValue)
+                Chat("  Native healer mana gate: " + (snap.HoldingForMana.Value ? "HOLDING" : "clear"), "grey");
+
+            if (snap.HoldManaFraction.HasValue)
+                Chat("  Hold if healer mana under: " +
+                     ((int)Math.Round(snap.HoldManaFraction.Value * 100f)).ToString(CultureInfo.InvariantCulture) + "%", "grey");
+            if (snap.MaxPullLevelAbove.HasValue && snap.MaxPullLevelBelow.HasValue)
+                Chat("  Auto pull levels: " + snap.MaxPullLevelBelow.Value.ToString(CultureInfo.InvariantCulture) +
+                     " to +" + snap.MaxPullLevelAbove.Value.ToString(CultureInfo.InvariantCulture), "grey");
+            if (snap.MaxPullDistance.HasValue)
+                Chat("  Max pull distance: " + snap.MaxPullDistance.Value.ToString(CultureInfo.InvariantCulture), "grey");
+        }
+
+        private static string Describe(string value)
+        {
+            return string.IsNullOrEmpty(value) ? "unknown" : value;
+        }
+
+        private static string DescribeActivity(CampSnapshot snap)
+        {
+            if (snap == null) return "Unknown";
+            if (snap.Activity == CampActivity.Pulling)
+                return string.IsNullOrEmpty(snap.CurrentPullTargetName) ? "PULL INCOMING" : "PULL INCOMING - " + snap.CurrentPullTargetName;
+            if (snap.Activity == CampActivity.Recovering)
+                return "RECOVERING - native healer mana hold";
+            if (snap.Activity == CampActivity.Fighting) return "FIGHTING";
+            if (snap.Activity == CampActivity.Waiting) return "WAITING";
+            return "UNKNOWN";
+        }
+
+        private static string FormatDuration(double seconds)
+        {
+            if (seconds < 60.0) return ((int)seconds).ToString(CultureInfo.InvariantCulture) + "s";
+            return ((int)(seconds / 60.0)).ToString(CultureInfo.InvariantCulture) + "m";
+        }
+
+        private static bool Is(string value, string expected)
+        {
+            return string.Equals(value == null ? null : value.Trim(), expected, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryMatchCommand(string raw, string command, out string argument)
+        {
+            argument = null;
+            if (raw == null || command == null) return false;
+            if (!raw.StartsWith(command, StringComparison.OrdinalIgnoreCase)) return false;
+            if (raw.Length > command.Length && !char.IsWhiteSpace(raw[command.Length])) return false;
+            argument = raw.Length == command.Length ? string.Empty : raw.Substring(command.Length).Trim();
+            return true;
+        }
+
+        private static void ClearInput(TypeText typeText)
+        {
+            try
+            {
+                if (typeText != null && typeText.typed != null) typeText.typed.text = string.Empty;
+            }
+            catch { }
+        }
+    }
+
+    // Narrow chat interception. Anything that is not a /camp or /relax command is passed
+    // straight through to Erenshor and to any other mod patching this method.
+    [HarmonyPatch(typeof(TypeText), "CheckCommands")]
+    internal static class CampmasterChatPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(TypeText __instance)
+        {
+            try
+            {
+                return CampmasterPlugin.Instance == null ||
+                       __instance == null ||
+                       __instance.typed == null ||
+                       !CampmasterPlugin.Instance.TryHandle(__instance, __instance.typed.text);
+            }
+            catch (Exception ex)
+            {
+                if (CampmasterPlugin.Instance != null) CampmasterPlugin.Instance.LogPatchError(ex);
+                return true;
+            }
+        }
+    }
+}
