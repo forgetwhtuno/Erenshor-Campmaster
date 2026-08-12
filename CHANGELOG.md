@@ -1,5 +1,27 @@
 # Changelog — Erenshor Campmaster
 
+## Unreleased — native Lunaris migration
+
+- Converted the plugin host from BepInEx (`BaseUnityPlugin`/`[BepInPlugin]`/`[BepInProcess]`) to
+  native Lunaris (`LunarisPlugin`/`[LunarisPlugin]`/`[LunarisPermission(Reflection | Harmony)]`).
+  No FileAccess or Network permission requested — this mod owns no sidecar files and makes no
+  network calls.
+  `/camp` and `/relax` and their exact syntax are unchanged; the existing Harmony
+  `TypeText.CheckCommands` prefix hook is retained rather than converting to `[LunarisCommand]`,
+  so vanilla commands continue to pass through untouched.
+- Config replaced `ConfigEntry<T>`/`Config.Bind` with native typed Lunaris config
+  (`CampmasterSettings`); all 12 existing settings (section/key/default/description) preserved
+  unchanged. These values were already read once at startup rather than kept live-mutable, so no
+  `.Value` compatibility shim was needed here.
+- Logging replaced `BepInEx.Logging`/`ManualLogSource` with native Lunaris `Logging`.
+- Fixed a hot-unload leak in `CoopCompatibility` (same class found in the Deep Sims/Party Tools
+  migrations): the `AppDomain.CurrentDomain.AssemblyLoad` subscription used an anonymous delegate
+  with no way to ever unsubscribe. Replaced with a named handler and a new `Shutdown()` that
+  unsubscribes and clears the cached reflected COOP types; now called from `OnDestroy()` (this
+  mod's `OnDestroy()` previously did not clean up `CoopCompatibility` at all).
+- `BUILD_AND_INSTALL.ps1` now targets `<Erenshor>\plugins` instead of a BepInEx profile and no
+  longer requires `BepInEx.dll`.
+
 ## Unreleased — audit hardening
 
 ### Fixed / hardened

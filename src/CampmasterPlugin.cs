@@ -1,7 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using BepInEx;
+using Lunaris;
+using Lunaris.Config;
 using HarmonyLib;
 
 namespace ErenshorCampmaster
@@ -13,9 +14,10 @@ namespace ErenshorCampmaster
     // targets, attack, heal, move Sims, loot, travel, or otherwise play
     // Erenshor. Removing it changes nothing about native behaviour.
     // ---------------------------------------------------------------------
-    [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-    [BepInProcess("Erenshor.exe")]
-    public sealed class CampmasterPlugin : BaseUnityPlugin
+    [LunarisPlugin(PluginGuid, PluginVersion, "forgetwhtuno",
+        "Read-only Hunt Camp observation and explicit Relax downtime context. Does not assign roles, toggle Auto Pull, pick targets, or otherwise play Erenshor.")]
+    [LunarisPermission(LunarisPermission.Reflection | LunarisPermission.Harmony)]
+    public sealed class CampmasterPlugin : LunarisPlugin
     {
         internal const string PluginGuid = "forgetwhtuno.erenshor.campmaster";
         internal const string PluginName = "Erenshor Campmaster";
@@ -23,6 +25,7 @@ namespace ErenshorCampmaster
 
         internal static CampmasterPlugin Instance;
 
+        private CampmasterSettings _settings;
         private Harmony _harmony;
         private CampSessionTracker _tracker;
         private RelaxSessionTracker _relaxTracker;
@@ -42,35 +45,25 @@ namespace ErenshorCampmaster
         {
             Instance = this;
 
-            CampConfig config = new CampConfig();
-            config.AutoRecognitionEnabled = Config.Bind("Recognition", "AutoRecognition", true,
-                "Automatically recognize a Hunt Camp when the native party is guarding at a common anchor with a verified Puller and Auto Pull enabled. Disable to require /camp here.").Value;
-            config.AutoStabilitySeconds = Config.Bind("Recognition", "StabilitySeconds", 8.0,
-                "Campmaster threshold (not an Erenshor mechanic): how long every required native signal must hold before a camp is recognized.").Value;
-            config.DepartureRadius = Config.Bind("Recognition", "DepartureRadius", 45f,
-                "Campmaster threshold (not an Erenshor mechanic): distance in Unity units from the camp anchor that counts as leaving camp.").Value;
-            config.DepartureGraceSeconds = Config.Bind("Recognition", "DepartureGraceSeconds", 45.0,
-                "Campmaster threshold: how long the player must stay beyond DepartureRadius before the camp session ends.").Value;
-            config.PartyLossGraceSeconds = Config.Bind("Recognition", "PartyLossGraceSeconds", 20.0,
-                "Campmaster threshold: grace period for party churn/zoning before a camp session is finalized.").Value;
-            config.SignalLossGraceSeconds = Config.Bind("Recognition", "SignalLossGraceSeconds", 20.0,
-                "Campmaster threshold: how long unreadable native state may persist before an active camp is suspended.").Value;
-            config.EncounterQuietSeconds = Config.Bind("Session", "EncounterQuietSeconds", 8.0,
-                "Campmaster threshold: quiet period after combat clears before a completed encounter is counted.").Value;
-            config.RoughEncounterSeconds = Config.Bind("Session", "RoughEncounterSeconds", 45.0,
-                "Campmaster-derived classification threshold (not an Erenshor mechanic): combat duration at or above this value emits a rough-encounter seed.").Value;
-            config.RepeatedEnemyThreshold = Config.Bind("Session", "RepeatedEnemyThreshold", 3,
-                "Campmaster-derived threshold (not an Erenshor mechanic): verified pulls of the same exact target name before one repeated-enemy seed is emitted.").Value;
+            _settings = new CampmasterSettings();
+            Config.Register(ref _settings);
 
+            CampConfig config = new CampConfig();
+            config.AutoRecognitionEnabled = _settings.AutoRecognitionEnabled;
+            config.AutoStabilitySeconds = _settings.AutoStabilitySeconds;
+            config.DepartureRadius = _settings.DepartureRadius;
+            config.DepartureGraceSeconds = _settings.DepartureGraceSeconds;
+            config.PartyLossGraceSeconds = _settings.PartyLossGraceSeconds;
+            config.SignalLossGraceSeconds = _settings.SignalLossGraceSeconds;
+            config.EncounterQuietSeconds = _settings.EncounterQuietSeconds;
+            config.RoughEncounterSeconds = _settings.RoughEncounterSeconds;
+            config.RepeatedEnemyThreshold = _settings.RepeatedEnemyThreshold;
             _tracker = new CampSessionTracker(config);
 
             RelaxConfig relaxConfig = new RelaxConfig();
-            relaxConfig.DepartureRadius = Config.Bind("Relax", "DepartureRadius", 35f,
-                "Campmaster Relax threshold (not an Erenshor mechanic): distance from the explicit Relax anchor that counts as leaving.").Value;
-            relaxConfig.DepartureGraceSeconds = Config.Bind("Relax", "DepartureGraceSeconds", 15.0,
-                "How long the player may remain beyond the Relax radius before the Relax session ends.").Value;
-            relaxConfig.PartyLossGraceSeconds = Config.Bind("Relax", "PartyLossGraceSeconds", 12.0,
-                "Grace period for temporary party churn before an active Relax session ends.").Value;
+            relaxConfig.DepartureRadius = _settings.RelaxDepartureRadius;
+            relaxConfig.DepartureGraceSeconds = _settings.RelaxDepartureGraceSeconds;
+            relaxConfig.PartyLossGraceSeconds = _settings.RelaxPartyLossGraceSeconds;
             _relaxTracker = new RelaxSessionTracker(relaxConfig);
 
             _harmony = new Harmony(PluginGuid);
@@ -80,11 +73,11 @@ namespace ErenshorCampmaster
             }
             catch (Exception ex)
             {
-                Logger.LogError("Erenshor Campmaster failed to patch: " + ex);
+                Logging.LogError("Erenshor Campmaster failed to patch: " + ex);
                 return;
             }
 
-            Logger.LogInfo("Erenshor Campmaster 0.4.0 loaded. Hunt Camp remains read-only; explicit Relax is available with /relax here|off|status.");
+            Logging.LogInfo("Erenshor Campmaster 0.4.0 loaded. Hunt Camp remains read-only; explicit Relax is available with /relax here|off|status.");
         }
 
         private void Update()
@@ -102,7 +95,7 @@ namespace ErenshorCampmaster
                 if (!obs.ReadSucceeded && _readFailureLogCount < 3)
                 {
                     _readFailureLogCount++;
-                    Logger.LogWarning("Campmaster could not read native party state; reporting camp facts as unknown.");
+                    Logging.LogWarning("Campmaster could not read native party state; reporting camp facts as unknown.");
                 }
 
                 long relaxBefore = _relaxTracker == null ? 0L : _relaxTracker.LatestSequence;
@@ -120,14 +113,16 @@ namespace ErenshorCampmaster
             }
             catch (Exception ex)
             {
-                Logger.LogError("Campmaster tick failed: " + ex);
+                Logging.LogError("Campmaster tick failed: " + ex);
             }
         }
 
         private void OnDestroy()
         {
+            try { CoopCompatibility.Shutdown(); } catch { }
             try { if (_harmony != null) _harmony.UnpatchSelf(); }
             catch { }
+            _harmony = null;
             Instance = null;
         }
 
@@ -194,7 +189,7 @@ namespace ErenshorCampmaster
 
         internal void LogPatchError(Exception ex)
         {
-            try { Logger.LogError("Campmaster command patch failed: " + ex); }
+            try { Logging.LogError("Campmaster command patch failed: " + ex); }
             catch { }
         }
 
