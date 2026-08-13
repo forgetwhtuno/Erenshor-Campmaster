@@ -11,9 +11,23 @@ namespace ErenshorCampmaster
     // the sole owner of establishing the session. No native roles, Auto Pull,
     // targets, movement, combat,
     // inventory, or saves are changed here.
+    public sealed class CampmasterControlState
+    {
+        public bool Available;
+        public bool HuntCampActive;
+        public bool RelaxActive;
+        public string Mode;
+        public string State;
+        public string Zone;
+    }
+
     public static class CampmasterControlApi
     {
         public const int SchemaVersion = 1;
+        public const int ApiVersion = 1;
+        public const string ModuleId = "campmaster";
+        public static bool HasDedicatedPanel { get { return false; } }
+        public static bool IsPanelOpen { get { return false; } }
 
         public static bool IsAvailable
         {
@@ -83,6 +97,78 @@ namespace ErenshorCampmaster
                 failure = "Campmaster rejected the handoff: " + ex.Message;
                 return false;
             }
+        }
+
+        public static CampmasterControlState GetBasicState()
+        {
+            var snapshot = CampmasterApi.GetCurrentSnapshot();
+            string mode, state, zone;
+            snapshot.TryGetValue("mode", out mode);
+            snapshot.TryGetValue("state", out state);
+            snapshot.TryGetValue("zone", out zone);
+            return new CampmasterControlState
+            {
+                Available = IsAvailable,
+                HuntCampActive = CampmasterApi.IsHuntCampActive,
+                RelaxActive = CampmasterApi.IsRelaxActive,
+                Mode = mode ?? "None",
+                State = state ?? "Inactive",
+                Zone = zone
+            };
+        }
+
+        public static string GetStatus()
+        {
+            CampmasterControlState state = GetBasicState();
+            if (!state.Available) return "Campmaster unavailable";
+            if (state.RelaxActive) return "Relax: " + state.State;
+            if (state.HuntCampActive) return "Hunt Camp: " + state.State;
+            return "Campmaster idle";
+        }
+
+        public static bool AutoRecognitionEnabled
+        {
+            get
+            {
+                CampmasterPlugin plugin = CampmasterPlugin.Instance;
+                return plugin != null && plugin.Tracker != null && plugin.Tracker.Config.AutoRecognitionEnabled;
+            }
+        }
+
+        public static bool TrySetSetting(string settingId, string value, out string failure)
+        {
+            CampmasterPlugin plugin = CampmasterPlugin.Instance;
+            if (plugin == null || plugin.Tracker == null) { failure = "Campmaster is unavailable."; return false; }
+            return plugin.TrySetControlSetting(settingId, value, out failure);
+        }
+
+        public static bool OpenPanel() { return false; }
+        public static bool ClosePanel() { return false; }
+
+        public static bool TryRelaxHere(out string failure)
+        {
+            failure = null;
+            // Outer API-entry safety gate only; StartRelax() (run from the plugin's Update
+            // pending-request path) remains the sole owner of the real party/combat/anchor
+            // eligibility checks - this does not duplicate or replace that logic.
+            if (!SuiteUiPolicy.IsGameplayReady()) { failure = "Gameplay is not ready."; return false; }
+            CampmasterPlugin plugin = CampmasterPlugin.Instance;
+            if (plugin == null || plugin.RelaxTracker == null) { failure = "Campmaster is unavailable."; return false; }
+            plugin.RequestRelaxHereFromControl();
+            return true;
+        }
+
+        public static bool TryRelaxOff(out string failure)
+        {
+            failure = null;
+            // No readiness gate on the stop path: turning Relax off must always be reachable
+            // (e.g. via Hub) even if gameplay readiness is transiently false, so a player is
+            // never stuck unable to end an active Relax session.
+            CampmasterPlugin plugin = CampmasterPlugin.Instance;
+            if (plugin == null || plugin.RelaxTracker == null) { failure = "Campmaster is unavailable."; return false; }
+            if (!plugin.RelaxTracker.IsActive) return true;
+            plugin.RequestRelaxOffFromControl();
+            return true;
         }
     }
 }

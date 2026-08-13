@@ -161,3 +161,11 @@ First implementation. Observation only; no native write path exists.
   the pull loop with no exposed state field.
 - Deep Sims integration, social memory, LLM calls, and any native command
   writes.
+
+
+## Unreleased - Suite UI/API coherence handoff
+
+- Added optional, versioned `CampmasterControlApi` discovery/control surface for Suite Hub without a hard Hub dependency.
+- Kept standalone commands and core gameplay authority intact.
+- Documented the retained panel/launcher policy and Lunaris live-test requirement.
+- Extended the existing control surface with basic status and explicit Relax Here/Off actions; no gameplay automation was added.

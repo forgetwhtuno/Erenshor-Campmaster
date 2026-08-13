@@ -18,6 +18,7 @@ function Find-Csc {
 $csc = Find-Csc
 $sourceFiles = @(
     (Join-Path $modRoot "src\CampmasterControlPolicy.cs"),
+    (Join-Path $modRoot "src\CampmasterSuiteDescriptorPolicy.cs"),
     (Join-Path $modRoot "src\CampmasterControlApi.cs"),
     (Join-Path $scriptRoot "CampmasterControlPolicyTests.cs")
 )
