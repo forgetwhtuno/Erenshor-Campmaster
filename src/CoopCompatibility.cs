@@ -21,11 +21,30 @@ namespace ErenshorCampmaster
 
         static CoopCompatibility()
         {
-            try
-            {
-                AppDomain.CurrentDomain.AssemblyLoad += delegate { _resolved = false; };
-            }
+            try { AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad; }
             catch { }
+        }
+
+        private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
+        {
+            _resolved = false;
+        }
+
+        // Lunaris can unload this assembly at runtime. The AppDomain event outlives the plugin
+        // GameObject, so an unremoved handler would retain a delegate into the old assembly.
+        // Clear both the handler and the reflected cross-mod type cache during teardown; a
+        // reloaded assembly gets fresh statics.
+        internal static void Shutdown()
+        {
+            try { AppDomain.CurrentDomain.AssemblyLoad -= OnAssemblyLoad; }
+            catch { }
+            lock (ResolveLock)
+            {
+                _resolved = false;
+                _networkedPlayerType = null;
+                _legacyNetworkedPlayerType = null;
+                _networkedSimType = null;
+            }
         }
 
         internal static bool IsRemoteCoopHuman(SimPlayer sim)

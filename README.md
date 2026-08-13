@@ -30,11 +30,15 @@ Relax is explicit social downtime anchored with `/relax here`. It is mutually ex
 
 ## Configuration
 
-Recognition and Relax thresholds are BepInEx settings: stability, departure radius/grace, party-loss grace, signal-loss grace, encounter quiet time, rough-encounter threshold, repeated-enemy threshold, and automatic recognition. These are Campmaster thresholds, not new Erenshor mechanics.
+Recognition and Relax thresholds are native Lunaris config settings: stability, departure radius/grace, party-loss grace, signal-loss grace, encounter quiet time, rough-encounter threshold, repeated-enemy threshold, and automatic recognition. These are Campmaster thresholds, not new Erenshor mechanics.
 
 ## Compatibility and build
 
-The plugin is `forgetwhtuno.erenshor.campmaster`, version `0.4.0`. COOP/local authority is classified conservatively. Native state is polled at a low fixed interval, and unreadable state causes warnings/unknown fields rather than guesses. `BUILD_AND_INSTALL.ps1` compiles the plugin against the installed Erenshor assemblies.
+The plugin is `forgetwhtuno.erenshor.campmaster`, version `0.4.0`. COOP/local authority is classified conservatively. Native state is polled at a low fixed interval, and unreadable state causes warnings/unknown fields rather than guesses.
+
+This version requires **native Lunaris** — BepInEx is no longer required. `BUILD_AND_INSTALL.ps1` locates the current Erenshor install and the Lunaris developer reference, compiles the plugin, and installs only `ErenshorCampmaster.dll` to `<Erenshor>\plugins\`. Lunaris manages enable/disable and config. A legacy BepInEx release remains available in this repository's Git history.
+
+**Status:** this native build compiles cleanly against the installed Lunaris/Assembly-CSharp and passes its full deterministic test suite (Camp, Relax, and Control API cases). It has not yet been live-tested in-game under Lunaris (enable/disable/reload behavior). Do not assume hot-reload safety until that pass is done.
 
 ## Credits and Inspiration
 
