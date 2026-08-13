@@ -32,6 +32,8 @@ namespace ErenshorCampmaster
         private float _nextPollSeconds;
         private CampObservation _lastObservation;
         private int _readFailureLogCount;
+        private int _pendingControlRelax;
+        private CampmasterSuiteAuraProvider _auraProvider;
 
         // Native state is polled at a low fixed rate. Nothing here belongs on
         // a per-frame path.
@@ -40,6 +42,35 @@ namespace ErenshorCampmaster
         internal CampSessionTracker Tracker { get { return _tracker; } }
         internal RelaxSessionTracker RelaxTracker { get { return _relaxTracker; } }
         internal CampObservation LastObservation { get { return _lastObservation; } }
+        internal void RequestRelaxHereFromControl() { _pendingControlRelax = 1; }
+        internal void RequestRelaxOffFromControl() { _pendingControlRelax = 2; }
+
+        internal bool TrySetControlSetting(string settingId, string value, out string failure)
+        {
+            failure = null;
+            string normalized;
+            if (!CampmasterSuiteDescriptorPolicy.TryNormalizeSettingValue(settingId, value, out normalized))
+            {
+                failure = string.Equals((settingId ?? string.Empty).Trim(), "autoRecognition", StringComparison.OrdinalIgnoreCase)
+                    ? "Expected true or false."
+                    : "Unknown setting id.";
+                return false;
+            }
+            bool enabled = string.Equals(normalized, "true", StringComparison.Ordinal);
+            if (_tracker == null || _settings == null) { failure = "Campmaster is not ready."; return false; }
+            bool oldValue = _tracker.Config.AutoRecognitionEnabled;
+            _tracker.SetAutoRecognitionEnabled(enabled);
+            _settings.AutoRecognitionEnabled = enabled;
+            try { Config.Save(); }
+            catch (Exception ex)
+            {
+                _tracker.SetAutoRecognitionEnabled(oldValue);
+                _settings.AutoRecognitionEnabled = oldValue;
+                failure = "Could not save Campmaster settings (" + ex.GetType().Name + ").";
+                return false;
+            }
+            return true;
+        }
 
         private void Awake()
         {
@@ -77,6 +108,17 @@ namespace ErenshorCampmaster
                 return;
             }
 
+            try
+            {
+                _auraProvider = new CampmasterSuiteAuraProvider(this);
+                _auraProvider.Register();
+            }
+            catch (Exception ex)
+            {
+                try { if (_auraProvider != null) _auraProvider.Unregister(); } catch { }
+                Logging.LogError("Campmaster Suite Aura provider failed to register: " + ex.GetType().Name);
+            }
+
             Logging.LogInfo("Erenshor Campmaster 0.4.0 loaded. Hunt Camp remains read-only; explicit Relax is available with /relax here|off|status.");
         }
 
@@ -84,6 +126,11 @@ namespace ErenshorCampmaster
         {
             try
             {
+                if (_pendingControlRelax != 0)
+                {
+                    int request = _pendingControlRelax; _pendingControlRelax = 0;
+                    if (request == 1) StartRelax(); else if (request == 2) StopRelax();
+                }
                 if (_tracker == null) return;
                 if (UnityEngine.Time.unscaledTime < _nextPollSeconds) return;
                 _nextPollSeconds = UnityEngine.Time.unscaledTime + PollIntervalSeconds;
@@ -119,10 +166,13 @@ namespace ErenshorCampmaster
 
         private void OnDestroy()
         {
+            try { if (_auraProvider != null) _auraProvider.Unregister(); } catch { }
+            _auraProvider = null;
             try { CoopCompatibility.Shutdown(); } catch { }
             try { if (_harmony != null) _harmony.UnpatchSelf(); }
             catch { }
             _harmony = null;
+            _pendingControlRelax = 0;
             Instance = null;
         }
 
@@ -242,7 +292,7 @@ namespace ErenshorCampmaster
             Chat("[Relax] Usage: /relax here | /relax off | /relax status", "yellow");
         }
 
-        private void StartRelax()
+        internal void StartRelax()
         {
             if (_relaxTracker == null) return;
             if (_tracker != null && _tracker.IsActive)
@@ -293,7 +343,7 @@ namespace ErenshorCampmaster
                 Chat("[Relax] Relax could not be established from the fresh native party/combat state; try again in a moment.", "yellow");
         }
 
-        private void StopRelax()
+        internal void StopRelax()
         {
             if (_relaxTracker == null || !_relaxTracker.IsActive)
             {
@@ -476,8 +526,12 @@ namespace ErenshorCampmaster
 
         private void SetAuto(bool enabled)
         {
-            if (_tracker == null) return;
-            _tracker.SetAutoRecognitionEnabled(enabled);
+            string failure;
+            if (!TrySetControlSetting("autoRecognition", enabled ? "true" : "false", out failure))
+            {
+                Chat("[Camp] Could not change automatic recognition: " + (failure ?? "rejected"), "yellow");
+                return;
+            }
             Chat("[Camp] Automatic recognition " + (enabled ? "ON" : "OFF") + ".", "lightblue");
         }
 

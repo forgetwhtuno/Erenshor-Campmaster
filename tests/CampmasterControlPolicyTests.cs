@@ -25,6 +25,13 @@ namespace ErenshorCampmaster
             Check("control API rejects active camp", ApiRejectsActiveCamp());
             Check("control API rejects unreadable observation", ApiRejectsUnreadableObservation());
             Check("control API rejects missing party", ApiRejectsMissingParty());
+            Check("Suite basic descriptor uses exact bool wire", DescriptorUsesExactBoolWire());
+            Check("Suite auto-recognition setting routes", DescriptorSettingRoutes());
+            Check("Suite invalid setting values reject", DescriptorSettingRejectsInvalid());
+            Check("control API mutates only Campmaster recognition", ApiSetsAutoRecognition());
+            Check("Suite status is bounded", DescriptorStatusBounded());
+            Check("Suite descriptor excludes sensitive fields", DescriptorPrivacySafe());
+            Check("Suite advertises only Relax actions", DescriptorActionsAreRelaxOnly());
 
             Console.WriteLine(_failures == 0
                 ? "Campmaster control API deterministic tests: ALL PASS"
@@ -125,6 +132,72 @@ namespace ErenshorCampmaster
                    failure == "No party is currently detected.";
         }
 
+        private static bool DescriptorUsesExactBoolWire()
+        {
+            string on = CampmasterSuiteDescriptorPolicy.BuildBasicSettings(true);
+            string off = CampmasterSuiteDescriptorPolicy.BuildBasicSettings(false);
+            return Field(on, "type") == "bool" && Field(on, "value") == "true" &&
+                   Field(off, "value") == "false" && Field(on, "tier") == "basic";
+        }
+
+        private static bool DescriptorSettingRoutes()
+        {
+            string normalized;
+            return CampmasterSuiteDescriptorPolicy.TryNormalizeSettingValue("autoRecognition", "TRUE", out normalized) && normalized == "true" &&
+                   CampmasterSuiteDescriptorPolicy.TryNormalizeSettingValue("autoRecognition", "false", out normalized) && normalized == "false";
+        }
+
+        private static bool DescriptorSettingRejectsInvalid()
+        {
+            string normalized;
+            return !CampmasterSuiteDescriptorPolicy.TryNormalizeSettingValue("autoRecognition", "1", out normalized) &&
+                   !CampmasterSuiteDescriptorPolicy.TryNormalizeSettingValue("autoRecognition", "on", out normalized) &&
+                   !CampmasterSuiteDescriptorPolicy.TryNormalizeSettingValue("autoPull", "true", out normalized);
+        }
+
+        private static bool ApiSetsAutoRecognition()
+        {
+            CampSessionTracker tracker = NewTracker(false);
+            tracker.SetAutoRecognitionEnabled(true);
+            CampmasterPlugin.Instance = new CampmasterPlugin { Tracker = tracker };
+            string failure;
+            bool ok = CampmasterControlApi.TrySetSetting("autoRecognition", "false", out failure);
+            return ok && failure == null && !tracker.Config.AutoRecognitionEnabled;
+        }
+
+        private static bool DescriptorStatusBounded()
+        {
+            string payload = CampmasterSuiteDescriptorPolicy.BuildDescribe("0.4.0", new string('s', 500));
+            return Field(payload, "status").Length == CampmasterSuiteDescriptorPolicy.MaxHubText;
+        }
+
+        private static bool DescriptorPrivacySafe()
+        {
+            return !CampmasterSuiteDescriptorPolicy.ContainsSensitiveFieldName(
+                CampmasterSuiteDescriptorPolicy.BuildDescribe("0.4.0", "Campmaster idle")) &&
+                   !CampmasterSuiteDescriptorPolicy.ContainsSensitiveFieldName(
+                CampmasterSuiteDescriptorPolicy.BuildBasicSettings(true));
+        }
+
+        private static bool DescriptorActionsAreRelaxOnly()
+        {
+            string payload = CampmasterSuiteDescriptorPolicy.BuildDescribe("0.4.0", "Campmaster idle");
+            return Field(payload, "actions") == "relaxHere,relaxOff";
+        }
+
+        private static string Field(string line, string key)
+        {
+            string[] pairs = (line ?? string.Empty).Split('&');
+            for (int i = 0; i < pairs.Length; i++)
+            {
+                int eq = pairs[i].IndexOf('=');
+                if (eq <= 0) continue;
+                string k = Uri.UnescapeDataString(pairs[i].Substring(0, eq));
+                if (k == key) return Uri.UnescapeDataString(pairs[i].Substring(eq + 1));
+            }
+            return string.Empty;
+        }
+
         private static CampSessionTracker NewTracker(bool active)
         {
             CampSessionTracker tracker = new CampSessionTracker();
@@ -159,13 +232,43 @@ namespace ErenshorCampmaster
         internal CampSessionTracker Tracker { get; set; }
         internal CampObservation LastObservation { get; set; }
         internal RelaxSessionTracker RelaxTracker { get; set; }
+        internal void RequestRelaxHereFromControl() { if (RelaxTracker != null) RelaxTracker.RequestStart(); }
+        internal void RequestRelaxOffFromControl() { if (RelaxTracker != null) RelaxTracker.RequestStop("control"); }
+        internal bool TrySetControlSetting(string settingId, string value, out string failure)
+        {
+            string normalized;
+            if (Tracker == null || !CampmasterSuiteDescriptorPolicy.TryNormalizeSettingValue(settingId, value, out normalized))
+            {
+                failure = "rejected";
+                return false;
+            }
+            Tracker.SetAutoRecognitionEnabled(normalized == "true");
+            failure = null;
+            return true;
+        }
+    }
+
+    // Test-only stand-in for the real Unity-backed SuiteUiPolicy gate (src/SuiteUiPolicy.cs).
+    // This harness has no Unity/game assemblies to evaluate real readiness against, so it
+    // always reports ready; readiness gating itself remains NEEDS LIVE TEST.
+    internal static class SuiteUiPolicy
+    {
+        internal static bool IsGameplayReady() { return true; }
     }
 
     internal sealed class RelaxSessionTracker
     {
         internal bool IsActive { get; set; }
         internal int StopCount { get; private set; }
+        internal int StartCount { get; private set; }
         private bool _pendingStop;
+        private bool _pendingStart;
+
+        internal void RequestStart()
+        {
+            StartCount++;
+            _pendingStart = true;
+        }
 
         internal void RequestStop(string reason)
         {
@@ -180,12 +283,20 @@ namespace ErenshorCampmaster
                 _pendingStop = false;
                 IsActive = false;
             }
+            if (_pendingStart)
+            {
+                _pendingStart = false;
+                IsActive = true;
+            }
         }
     }
 
     internal sealed class CampSessionTracker
     {
         internal bool IsActive { get; set; }
+        internal CampConfig Config { get; private set; }
+        internal CampSessionTracker() { Config = new CampConfig(); }
+        internal void SetAutoRecognitionEnabled(bool enabled) { Config.AutoRecognitionEnabled = enabled; }
         internal int RequestCount { get; private set; }
         internal int TickCount { get; private set; }
         internal CampVector3? LastRequestedPosition { get; private set; }
@@ -228,6 +339,11 @@ namespace ErenshorCampmaster
         }
     }
 
+    internal sealed class CampConfig
+    {
+        internal bool AutoRecognitionEnabled = true;
+    }
+
     internal static class NativeGroupStateReader
     {
         internal static CampObservation Observation;
@@ -243,6 +359,20 @@ namespace ErenshorCampmaster
                 return CampmasterPlugin.Instance != null && CampmasterPlugin.Instance.Tracker != null &&
                        CampmasterPlugin.Instance.Tracker.IsActive;
             }
+        }
+
+        public static bool IsRelaxActive
+        {
+            get
+            {
+                return CampmasterPlugin.Instance != null && CampmasterPlugin.Instance.RelaxTracker != null &&
+                       CampmasterPlugin.Instance.RelaxTracker.IsActive;
+            }
+        }
+
+        public static System.Collections.Generic.Dictionary<string, string> GetCurrentSnapshot()
+        {
+            return new System.Collections.Generic.Dictionary<string, string>();
         }
     }
 }
