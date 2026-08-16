@@ -20,6 +20,7 @@ $sourceFiles = @(
     (Join-Path $modRoot "src\CampmasterControlPolicy.cs"),
     (Join-Path $modRoot "src\CampmasterSuiteDescriptorPolicy.cs"),
     (Join-Path $modRoot "src\CampmasterControlApi.cs"),
+    (Join-Path $scriptRoot "StandaloneFallbackUiStub.cs"),
     (Join-Path $scriptRoot "CampmasterControlPolicyTests.cs")
 )
 foreach ($source in $sourceFiles) { if (-not (Test-Path $source)) { throw "Test source missing: $source" } }

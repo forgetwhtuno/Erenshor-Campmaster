@@ -50,7 +50,7 @@ This version requires **native Lunaris** — BepInEx is no longer required. `BUI
 
 ## Development note
 
-This project has been developed heavily with AI-assisted coding tools. The goal has been to build features I wanted to use in Erenshor, with development guided through design, testing, playtesting, audits, and iteration against the game. Bug reports, code review, corrections, and contributions from experienced Erenshor modders are welcome.
+The goal is to build features for Erenshor, with development guided through design, testing, playtesting, audits, and iteration against the game. Bug reports, code review, corrections, and contributions from experienced Erenshor modders are welcome.
 
 This is an unofficial, community-made mod for Erenshor and is not affiliated with or endorsed by the game's developer.
 
@@ -59,7 +59,7 @@ This is an unofficial, community-made mod for Erenshor and is not affiliated wit
 
 Erenshor Suite Hub is **optional**. When it is installed, this mod can expose its normal player-facing controls there through the versioned public `CampmasterControlApi` surface. The mod remains independently usable without Suite Hub and does not compile against Hub types or assume Hub load order.
 
-Campmaster intentionally has no dedicated window or standalone launcher; `/camp` and `/relax` remain the standalone controls.
+Campmaster keeps gameplay scope small, but it now has the shared retained fallback entry point for mouse discoverability. A healthy Hub hides that fallback; if Hub is absent/unavailable it returns automatically. `/camp` and `/relax` remain compatibility controls.
 
 Hub can show Hunt Camp/Relax status, toggle Campmaster's existing automatic Hunt Camp recognition setting, and invoke the existing explicit Relax Here/Off intents. It never changes roles, Guard, Auto Pull, targets, combat, movement, loot, equipment, or quests. `/camp auto on|off` and the Hub setting now use the same persisted Campmaster setting path.
 

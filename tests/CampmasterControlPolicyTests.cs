@@ -31,7 +31,7 @@ namespace ErenshorCampmaster
             Check("control API mutates only Campmaster recognition", ApiSetsAutoRecognition());
             Check("Suite status is bounded", DescriptorStatusBounded());
             Check("Suite descriptor excludes sensitive fields", DescriptorPrivacySafe());
-            Check("Suite advertises only Relax actions", DescriptorActionsAreRelaxOnly());
+            Check("Suite advertises fallback panel and only existing Relax actions", DescriptorActionsAreRelaxOnly());
 
             Console.WriteLine(_failures == 0
                 ? "Campmaster control API deterministic tests: ALL PASS"
@@ -182,7 +182,7 @@ namespace ErenshorCampmaster
         private static bool DescriptorActionsAreRelaxOnly()
         {
             string payload = CampmasterSuiteDescriptorPolicy.BuildDescribe("0.4.0", "Campmaster idle");
-            return Field(payload, "actions") == "relaxHere,relaxOff";
+            return Field(payload, "actions") == "openPanel,closePanel,relaxHere,relaxOff";
         }
 
         private static string Field(string line, string key)
