@@ -40,7 +40,7 @@ The plugin is `forgetwhtuno.erenshor.campmaster`, version `0.4.0`. COOP/local au
 
 This version requires **native Lunaris** — BepInEx is no longer required. `BUILD_AND_INSTALL.ps1` locates the current Erenshor install and the Lunaris developer reference, compiles the plugin, and installs only `ErenshorCampmaster.dll` to `<Erenshor>\plugins\`. Lunaris manages enable/disable and config. A legacy BepInEx release remains available in this repository's Git history.
 
-**Status:** this native build compiles cleanly against the installed Lunaris/Assembly-CSharp and passes its full deterministic test suite (Camp, Relax, and Control API cases). It has not yet been live-tested in-game under Lunaris (enable/disable/reload behavior). Do not assume hot-reload safety until that pass is done.
+**Status:** the deterministic Camp, Relax, and Control API suites pass for the current source snapshot. A fresh native build and plugin-identity audit remain pending because the current Lunaris resolver is unavailable in this session. It has not yet been live-tested in-game under Lunaris (enable/disable/reload behavior). Do not assume hot-reload safety until that pass is done.
 
 ## Credits and Inspiration
 
