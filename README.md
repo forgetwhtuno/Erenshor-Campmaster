@@ -1,4 +1,6 @@
-# Erenshor Campmaster 0.4.0
+# Forgotten Roads: Campmaster 0.4.0
+
+Part of the **Forgotten Roads for Erenshor** mod collection.
 
 Campmaster observes native party state and exposes two social context modes: Hunt Camp and Relax. It is intentionally read-only with respect to Erenshor gameplay.
 
