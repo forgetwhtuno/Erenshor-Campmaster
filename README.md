@@ -55,9 +55,9 @@ The goal is to build features for Erenshor, with development guided through desi
 This is an unofficial, community-made mod for Erenshor and is not affiliated with or endorsed by the game's developer.
 
 
-## Optional Suite Hub integration
+## Optional Forgotten Roads Hub integration
 
-Erenshor Suite Hub is **optional**. When it is installed, this mod can expose its normal player-facing controls there through the versioned public `CampmasterControlApi` surface. The mod remains independently usable without Suite Hub and does not compile against Hub types or assume Hub load order.
+Forgotten Roads Hub is **optional**. When it is installed, this mod can expose its normal player-facing controls there through the versioned public `CampmasterControlApi` surface. The mod remains independently usable without Forgotten Roads Hub and does not compile against Hub types or assume Hub load order.
 
 Campmaster keeps gameplay scope small, but it now has the shared retained fallback entry point for mouse discoverability. A healthy Hub hides that fallback; if Hub is absent/unavailable it returns automatically. `/camp` and `/relax` remain compatibility controls.
 
