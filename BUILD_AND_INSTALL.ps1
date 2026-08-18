@@ -79,6 +79,7 @@ $refs = @(
     (Join-Path $managed "netstandard.dll"),
     (Join-Path $managed "UnityEngine.dll"),
     (Join-Path $managed "UnityEngine.CoreModule.dll"),
+    (Join-Path $managed "UnityEngine.UIModule.dll"),
     (Join-Path $managed "UnityEngine.UI.dll"),
     (Join-Path $managed "UnityEngine.IMGUIModule.dll"),
     (Join-Path $managed "UnityEngine.TextRenderingModule.dll")
@@ -107,6 +108,9 @@ try {
     Get-ChildItem (Join-Path $ScriptRoot "src") -Filter "*.cs" | Sort-Object Name | ForEach-Object {
         $lines += '"' + $_.FullName + '"'
     }
+    $fallbackUi = Join-Path (Split-Path -Parent (Split-Path -Parent $ScriptRoot)) "Erenshor-Mod-Suite\shared\ErenshorSuite.UI\StandaloneFallbackUi.cs"
+    if (-not (Test-Path -LiteralPath $fallbackUi)) { throw "Missing shared standalone UI source: $fallbackUi" }
+    $lines += '"' + $fallbackUi + '"'
     $lines | Set-Content $rsp -Encoding ASCII
 
     $lunarisHash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $LunarisLibDir "Lunaris.dll")).Hash.ToLowerInvariant()

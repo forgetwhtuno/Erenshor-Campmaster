@@ -70,6 +70,8 @@ namespace ErenshorCampmaster
         {
             switch (actionId)
             {
+                case "openPanel": return CampmasterControlApi.OpenPanel() ? "ok" : "rejected";
+                case "closePanel": return CampmasterControlApi.ClosePanel() ? "ok" : "rejected";
                 case "relaxHere":
                 {
                     string failure;

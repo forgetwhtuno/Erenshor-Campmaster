@@ -17,7 +17,7 @@ namespace ErenshorCampmaster
                 + "&version=" + Escape(Bound(version, 32))
                 + "&summary=" + Escape("Read-only Hunt Camp and explicit Relax context")
                 + "&status=" + Escape(Bound(status, MaxHubText))
-                + "&actions=relaxHere,relaxOff";
+                + "&actions=openPanel,closePanel,relaxHere,relaxOff";
         }
 
         internal static string BuildBasicSettings(bool autoRecognition)

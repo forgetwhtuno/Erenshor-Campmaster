@@ -1,4 +1,5 @@
 using System;
+using ForgottenRoads.StandaloneUi;
 
 namespace ErenshorCampmaster
 {
@@ -26,8 +27,8 @@ namespace ErenshorCampmaster
         public const int SchemaVersion = 1;
         public const int ApiVersion = 1;
         public const string ModuleId = "campmaster";
-        public static bool HasDedicatedPanel { get { return false; } }
-        public static bool IsPanelOpen { get { return false; } }
+        public static bool HasDedicatedPanel { get { return true; } }
+        public static bool IsPanelOpen { get { return StandaloneFallbackUi.IsOpen; } }
 
         public static bool IsAvailable
         {
@@ -142,8 +143,8 @@ namespace ErenshorCampmaster
             return plugin.TrySetControlSetting(settingId, value, out failure);
         }
 
-        public static bool OpenPanel() { return false; }
-        public static bool ClosePanel() { return false; }
+        public static bool OpenPanel() { return StandaloneFallbackUi.Open(); }
+        public static bool ClosePanel() { return StandaloneFallbackUi.Close(); }
 
         public static bool TryRelaxHere(out string failure)
         {

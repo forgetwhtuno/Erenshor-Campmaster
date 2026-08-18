@@ -4,6 +4,7 @@ using System.Globalization;
 using Lunaris;
 using Lunaris.Config;
 using HarmonyLib;
+using ForgottenRoads.StandaloneUi;
 
 namespace ErenshorCampmaster
 {
@@ -104,8 +105,8 @@ namespace ErenshorCampmaster
             }
             catch (Exception ex)
             {
-                Logging.LogError("Erenshor Campmaster failed to patch: " + ex);
-                return;
+                try { _harmony.UnpatchSelf(); } catch { }
+                Logging.LogError("Erenshor Campmaster command hook unavailable (" + ex.GetType().Name + "). Hunt Camp/Relax tracking and the standalone UI will continue; slash-command compatibility is disabled.");
             }
 
             try
@@ -120,10 +121,17 @@ namespace ErenshorCampmaster
             }
 
             Logging.LogInfo("Erenshor Campmaster 0.4.0 loaded. Hunt Camp remains read-only; explicit Relax is available with /relax here|off|status.");
+            StandaloneFallbackUi.Initialize(this, "campmaster", "CAMPMASTER",
+                "Declare a camp or start explicit downtime here. Native party/combat state remains authoritative.", 200f,
+                CampmasterControlApi.GetStatus,
+                new FallbackAction("Hunt Camp Here", delegate { string failure; return CampmasterControlApi.TryDeclareHere(out failure); }, null),
+                new FallbackAction("Relax Here", delegate { string failure; return CampmasterControlApi.TryRelaxHere(out failure); }, null),
+                new FallbackAction("End Relax", delegate { string failure; return CampmasterControlApi.TryRelaxOff(out failure); }, null));
         }
 
         private void Update()
         {
+            StandaloneFallbackUi.Tick(SuiteUiPolicy.IsGameplayReady());
             try
             {
                 if (_pendingControlRelax != 0)
@@ -166,6 +174,7 @@ namespace ErenshorCampmaster
 
         private void OnDestroy()
         {
+            StandaloneFallbackUi.Dispose();
             try { if (_auraProvider != null) _auraProvider.Unregister(); } catch { }
             _auraProvider = null;
             try { CoopCompatibility.Shutdown(); } catch { }
