@@ -105,8 +105,8 @@ namespace ErenshorCampmaster
             }
             catch (Exception ex)
             {
-                Logging.LogError("Erenshor Campmaster failed to patch: " + ex);
-                return;
+                try { _harmony.UnpatchSelf(); } catch { }
+                Logging.LogError("Erenshor Campmaster command hook unavailable (" + ex.GetType().Name + "). Hunt Camp/Relax tracking and the standalone UI will continue; slash-command compatibility is disabled.");
             }
 
             try
