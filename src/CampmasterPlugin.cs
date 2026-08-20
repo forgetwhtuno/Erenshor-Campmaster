@@ -122,7 +122,7 @@ namespace ErenshorCampmaster
 
             Logging.LogInfo("Erenshor Campmaster 0.4.0 loaded. Hunt Camp remains read-only; explicit Relax is available with /relax here|off|status.");
             StandaloneFallbackUi.Initialize(this, "campmaster", "CAMPMASTER",
-                "Declare a camp or start explicit downtime here. Native party/combat state remains authoritative.", 200f,
+                "Declare a camp or start explicit downtime here. Native party/combat state remains authoritative.", 200f, 70f,
                 CampmasterControlApi.GetStatus,
                 new FallbackAction("Hunt Camp Here", delegate { string failure; return CampmasterControlApi.TryDeclareHere(out failure); }, null),
                 new FallbackAction("Relax Here", delegate { string failure; return CampmasterControlApi.TryRelaxHere(out failure); }, null),
